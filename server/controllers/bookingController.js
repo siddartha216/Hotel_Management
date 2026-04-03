@@ -2,6 +2,7 @@ import Booking from "../models/Booking.js";
 import Room from "../models/Room.js";
 import Hotel from "../models/Hotel.js";
 import transporter from "../configs/nodemailer.js";
+import { getUserEmail } from "../utils/getUserEmail.js";
 
 
 // ================= INTERNAL FUNCTION =================
@@ -40,10 +41,8 @@ export const checkRoomAvailability = async (req, res) => {
 };
 
 
-
 // ================= CREATE BOOKING =================
 export const createBooking = async (req, res) => {
-
   try {
 
     const { room, checkInDate, checkOutDate, guests } = req.body;
@@ -58,7 +57,7 @@ export const createBooking = async (req, res) => {
     if (!isAvailable) {
       return res.json({
         success:false,
-        message:"Room is not available for the selected dates"
+        message:"Room is not available"
       });
     }
 
@@ -72,7 +71,7 @@ export const createBooking = async (req, res) => {
     const checkOut = new Date(checkOutDate);
 
     const nights = Math.ceil(
-      (checkOut.getTime() - checkIn.getTime()) / (1000 * 3600 * 24)
+      (checkOut - checkIn) / (1000 * 60 * 60 * 24)
     );
 
     const totalPrice = roomData.pricePerNight * nights;
@@ -87,29 +86,34 @@ export const createBooking = async (req, res) => {
       totalPrice
     });
 
-    // ================= EMAIL =================
-    const mailOptions = {
-      from: process.env.SENDER_EMAIL,
-      to: process.env.SMTP_USER,   // change later to real user email if needed
-      subject: "Booking Confirmation",
-      html: `
-        <h2>Booking Confirmed</h2>
-        <p><b>Hotel:</b> ${roomData.hotel.name}</p>
-        <p><b>Location:</b> ${roomData.hotel.address}</p>
-        <p><b>Total:</b> ${totalPrice}</p>
-      `
-    };
-
+    // ================= SEND EMAIL TO ACTUAL USER =================
     try {
-      await transporter.sendMail(mailOptions);
-      console.log("EMAIL SENT");
-    } catch (mailErr) {
-      console.log("EMAIL FAILED:", mailErr.message);
+      const userEmail = await getUserEmail(user); // 🔥 fetch from Clerk
+
+      await transporter.sendMail({
+        from: process.env.SENDER_EMAIL,
+        to: userEmail,   // ✅ actual user email
+        subject: "Booking Confirmation",
+        html: `
+          <h2>Booking Confirmed</h2>
+          <p><b>Hotel:</b> ${roomData.hotel.name}</p>
+          <p><b>Location:</b> ${roomData.hotel.address}</p>
+          <p><b>Total:</b> ₹${totalPrice}</p>
+          <p><b>Check-in:</b> ${new Date(checkInDate).toDateString()}</p>
+          <p><b>Check-out:</b> ${new Date(checkOutDate).toDateString()}</p>
+        `
+      });
+
+      console.log("✅ Email sent to user:", userEmail);
+
+    } catch (err) {
+      console.log("❌ Email failed:", err.message);
     }
 
+    // ================= RESPONSE =================
     res.json({
       success:true,
-      message:"Booking created successfully",
+      message:"Booking created",
       booking
     });
 
@@ -119,10 +123,8 @@ export const createBooking = async (req, res) => {
 };
 
 
-
-// ================= 🔥 USER BOOKINGS (THIS WAS MISSING) =================
+// ================= USER BOOKINGS =================
 export const getUserBookings = async (req, res) => {
-
   try {
 
     const bookings = await Booking.find({ user:req.userId })
@@ -134,25 +136,30 @@ export const getUserBookings = async (req, res) => {
   } catch (error) {
     res.json({ success:false, message:"Failed to fetch bookings" });
   }
-
 };
 
 
-
-// ================= OWNER BOOKINGS =================
+// ================= DASHBOARD =================
 export const getHotelBookings = async (req, res) => {
-
   try {
+
+    let bookings = [];
 
     const hotel = await Hotel.findOne({ owner:req.userId });
 
-    if (!hotel) {
-      return res.json({ success:false, message:"Hotel not found" });
+    if (hotel) {
+      bookings = await Booking.find({ hotel:hotel._id });
+    } else {
+      bookings = await Booking.find(); // fallback
     }
 
-    const bookings = await Booking.find({ hotel:hotel._id })
-      .populate("room hotel user")
-      .sort({ createdAt:-1 });
+    bookings = await Booking.populate(bookings, [
+      { path: "room" },
+      { path: "hotel" },
+      { path: "user" }
+    ]);
+
+    bookings.sort((a, b) => b.createdAt - a.createdAt);
 
     const totalBookings = bookings.length;
 
@@ -170,7 +177,6 @@ export const getHotelBookings = async (req, res) => {
     });
 
   } catch (error) {
-    res.json({ success:false, message:"Failed to fetch bookings" });
+    res.json({ success:false, message:"Failed to fetch dashboard" });
   }
-
 };
